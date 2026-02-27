@@ -29,26 +29,98 @@ cpp/
 | OpenCV | 4.6 | modules: core imgproc imgcodecs highgui |
 | Intel OpenVINO Toolkit | 2025.3.0 | C++ Runtime only |
 
-### OpenVINO toolkit path
+---
 
-The toolkit is expected at:
+## Path configuration
+
+There are **three places** where paths must be set before building and running.
+
+### 1. OpenVINO toolkit root — `CMakeLists.txt`
+
+```cmake
+# CMakeLists.txt  line 16
+set(OV_TOOLKIT "openvino_libs/openvino_toolkit_ubuntu22_2025.3.0.19807.44526285f24_x86_64")
+```
+
+`OV_TOOLKIT` must point to the versioned toolkit directory that contains the `runtime/` subtree:
 
 ```
-openvino_libs/
-└── openvino_toolkit_ubuntu22_2025.3.0.19807.44526285f24_x86_64/
-    └── runtime/
-        ├── cmake/      ← CMake config files
-        ├── include/    ← headers
-        └── lib/intel64/← shared libraries (.so)
+<OV_TOOLKIT>/
+└── runtime/
+    ├── cmake/       ← OpenVINO CMake config (OpenVINOConfig.cmake)
+    ├── include/     ← C++ headers  (openvino/openvino.hpp …)
+    └── lib/intel64/ ← shared libraries (libopenvino.so.2025.3.0 …)
 ```
 
-To use a different toolkit location, either:
+**Option A — edit `CMakeLists.txt` directly** (recommended for a fixed install):
 
-- Edit `OV_TOOLKIT` in `CMakeLists.txt`, **or**
-- Pass it on the cmake command line:
-  ```bash
-  cmake .. -DOV_TOOLKIT=/path/to/your/toolkit
-  ```
+```cmake
+set(OV_TOOLKIT "/absolute/path/to/your/toolkit")
+```
+
+**Option B — pass at cmake configure time** (no file edits needed):
+
+```bash
+cmake .. -DOV_TOOLKIT=/absolute/path/to/your/toolkit
+```
+
+**Option C — conda / pip OpenVINO** (if you installed via `pip install openvino`):
+
+```bash
+# find the cmake config shipped with the Python package
+python -c "import openvino; print(openvino.__file__)"
+# typically: /home/<user>/anaconda3/envs/<env>/lib/python3.x/site-packages/openvino/__init__.py
+
+cmake .. -DOpenVINO_DIR=/home/<user>/anaconda3/envs/<env>/lib/python3.x/site-packages/openvino/cmake
+```
+
+> **Note:** the conda/pip package is built with the **old** `_GLIBCXX_USE_CXX11_ABI=0` ABI.
+> If you see linker errors like `undefined reference to cv::imread(std::string const&, int)`
+> you must switch to the standalone toolkit (Option A/B), which uses the new ABI matching system OpenCV.
+
+---
+
+### 2. Default model & image paths — `src/main.cpp` and `src/run_test.cpp`
+
+Both executables have built-in fallback paths used when no command-line arguments are given.
+Edit the constants near the top of each file:
+
+**`src/main.cpp`** (lines 46–47):
+
+```cpp
+std::string model_xml  = "openvino_int8/best.xml";   // ← path to best.xml
+std::string image_path = "test_imgs/001973.jpg";      // ← test image
+```
+
+**`src/run_test.cpp`** (lines 37–45):
+
+```cpp
+static const std::string DEFAULT_MODEL = "openvino_int8/best.xml";
+static const std::string DEFAULT_IMAGE = "test_imgs/001973.jpg";
+
+static constexpr int   DEFAULT_THREADS = 2;      // parallel detector instances
+static constexpr int   DEFAULT_WARMUP  = 10;     // warm-up runs (excluded from stats)
+static constexpr int   DEFAULT_RUNS    = 100;    // timed runs per thread
+static constexpr float CONF_THRESH     = 0.65f;  // confidence threshold
+static constexpr float IOU_THRESH      = 0.80f;  // NMS IoU threshold
+```
+
+All of these can also be overridden at **runtime** via positional command-line arguments
+(see the *Running* sections below) without recompiling.
+
+---
+
+### 3. Quick path-check before building
+
+```bash
+# verify toolkit structure
+ls <OV_TOOLKIT>/runtime/cmake/OpenVINOConfig.cmake   # must exist
+ls <OV_TOOLKIT>/runtime/lib/intel64/libopenvino.so*  # must exist
+
+# verify model export
+ls openvino_int8/best.xml
+ls openvino_int8/best.bin
+```
 
 ---
 
@@ -56,16 +128,19 @@ To use a different toolkit location, either:
 
 ```bash
 # 1. create and enter the build directory
-mkdir -p cpp/build && cd cpp/build
+mkdir -p build && cd build
 
-# 2. configure
+# 2. configure  (OV_TOOLKIT already set in CMakeLists.txt, or pass -D override)
 cmake ..
+
+# 2b. configure with an explicit toolkit path
+cmake .. -DOV_TOOLKIT=/absolute/path/to/your/toolkit
 
 # 3. compile both targets (parallel)
 make -j$(nproc)
 ```
 
-This produces two executables inside `cpp/build/`:
+This produces two executables inside `build/`:
 
 | Executable | Source | Purpose |
 |---|---|---|
@@ -77,16 +152,28 @@ This produces two executables inside `cpp/build/`:
 ## Running the demo (`openvino_yolo26_seg`)
 
 ```bash
-./openvino_yolo26_seg [model_xml] [image_path] [output_dir] [conf] [iou]
+# use built-in default paths (set in main.cpp)
+./openvino_yolo26_seg
+
+# override all arguments
+./openvino_yolo26_seg <model_xml> <image_path> <output_dir> <conf> <iou>
+
+# example
+./openvino_yolo26_seg \
+    openvino_int8/best.xml \
+    test_imgs/001973.jpg \
+    /tmp/results \
+    0.75 \
+    0.45
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `model_xml` | hard-coded path | path to the exported `best.xml` |
-| `image_path` | hard-coded path | input BGR image |
-| `output_dir` | `/tmp` | directory for saved result images |
-| `conf` | `0.75` | confidence threshold |
-| `iou` | `0.45` | NMS IoU threshold |
+| Position | Argument | Default (in `main.cpp`) | Description |
+|---|---|---|---|
+| 1 | `model_xml` | `openvino_int8/best.xml` | path to the exported `best.xml` |
+| 2 | `image_path` | `test_imgs/001973.jpg` | input BGR image |
+| 3 | `output_dir` | `/tmp` | directory for saved result images |
+| 4 | `conf` | `0.75` | confidence threshold |
+| 5 | `iou` | `0.45` | NMS IoU threshold |
 
 The demo runs through **four postprocess modes** and saves a visualised result for each:
 
@@ -126,16 +213,29 @@ det.detectFromBlob(blob, h, w, conf, iou, /*do_postproc=*/false);
 ## Running the benchmark (`run_test`)
 
 ```bash
-./run_test [model_xml] [image_path] [num_threads] [warmup_runs] [test_runs]
+# use built-in defaults (set in run_test.cpp)
+./run_test
+
+# override all arguments
+./run_test <model_xml> <image_path> <num_threads> <warmup_runs> <test_runs>
+
+# example: 4 threads, 20 warm-up, 200 timed runs
+./run_test \
+    openvino_int8/best.xml \
+    test_imgs/001973.jpg \
+    4 20 200
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `model_xml` | hard-coded | model XML path |
-| `image_path` | hard-coded | test image |
-| `num_threads` | `2` | number of parallel detector instances |
-| `warmup_runs` | `10` | warm-up iterations per thread (excluded from stats) |
-| `test_runs` | `100` | timed iterations per thread |
+| Position | Argument | Default (in `run_test.cpp`) | Description |
+|---|---|---|---|
+| 1 | `model_xml` | `openvino_int8/best.xml` | model XML path |
+| 2 | `image_path` | `test_imgs/001973.jpg` | test image |
+| 3 | `num_threads` | `2` | parallel detector instances (one model per thread) |
+| 4 | `warmup_runs` | `10` | warm-up iterations per thread (not timed) |
+| 5 | `test_runs` | `100` | timed iterations per thread |
+
+> `CONF_THRESH` (0.65) and `IOU_THRESH` (0.80) are compile-time constants in
+> `run_test.cpp` — edit and recompile to change them.
 
 Image loading and preprocessing are **excluded** from all timing. The benchmark runs three passes automatically and prints a combined table:
 
